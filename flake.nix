@@ -101,8 +101,8 @@
             name = "example-flask-app";
             inherit python;
             src = ./examples/flask-app;
-            cmd = [ "python" "-m" "flask" "run" "--host=0.0.0.0" ];
             config = {
+              Cmd = [ "python" "-m" "flask" "run" "--host=0.0.0.0" ];
               WorkingDir = "/src";
               ExposedPorts = {
                 "5000/tcp" = { };
