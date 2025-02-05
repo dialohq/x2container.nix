@@ -51,10 +51,8 @@
               { name
               , python
               , src
-              , cmd
               , extraBuildInputs ? [ ]
               , runtimeLibs ? [ ]
-              , env ? [ ]
               , filesetFilter ? defaultFilesetFilter
               , config ? { }
               }:
@@ -76,7 +74,7 @@
               (nix2container.packages.${system}.nix2container.buildImage {
                 inherit name;
                 config = {
-                  Env = defaultEnv ++ env;
+                  Env = defaultEnv ++ config.Env;
                 } // config;
                 layers = [
                   (nix2container.packages.${system}.nix2container.buildLayer { deps = [ depsLayer ]; })
