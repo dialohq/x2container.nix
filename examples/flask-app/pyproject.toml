@@ -1,0 +1,10 @@
+[project]
+name = "example-flask-app"
+version = "0.1.0"
+dependencies = [
+    "flask>=3.0.0"
+] 
+
+[tool.uv]
+python-downloads = "manual"
+python-preference = "only-system"
