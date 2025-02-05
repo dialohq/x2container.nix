@@ -73,9 +73,9 @@
               in
               (nix2container.packages.${system}.nix2container.buildImage {
                 inherit name;
-                config = {
-                  Env = defaultEnv ++ config.Env;
-                } // config;
+                config = config // {
+                  Env = defaultEnv ++ (if builtins.hasAttr "Env" config then config.Env else [ ]);
+                };
                 layers = [
                   (nix2container.packages.${system}.nix2container.buildLayer { deps = [ depsLayer ]; })
                   (nix2container.packages.${system}.nix2container.buildLayer { deps = ([ python ] ++ runtimeLibs); })
