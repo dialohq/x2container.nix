@@ -56,7 +56,7 @@
               , runtimeLibs ? [ ]
               , env ? [ ]
               , filesetFilter ? defaultFilesetFilter
-              , extraConfig ? { }
+              , config ? { }
               }:
               let
                 depsLayer = buildDepsLayer {
@@ -76,10 +76,8 @@
               (nix2container.packages.${system}.nix2container.buildImage {
                 inherit name;
                 config = {
-                  WorkingDir = "/src";
-                  Cmd = cmd;
                   Env = defaultEnv ++ env;
-                } // extraConfig;
+                } // config;
                 layers = [
                   (nix2container.packages.${system}.nix2container.buildLayer { deps = [ depsLayer ]; })
                   (nix2container.packages.${system}.nix2container.buildLayer { deps = ([ python ] ++ runtimeLibs); })
@@ -106,7 +104,8 @@
             inherit python;
             src = ./examples/flask-app;
             cmd = [ "python" "-m" "flask" "run" "--host=0.0.0.0" ];
-            extraConfig = {
+            config = {
+              WorkingDir = "/src";
               ExposedPorts = {
                 "5000/tcp" = { };
               };
