@@ -62,13 +62,18 @@
                 depsLayer = buildDepsLayer {
                   inherit python src extraBuildInputs;
                 };
+                sourcesLayer = pkgs.lib.fileset.toSource
+                {
+                  root = src;
+                  fileset = pkgs.lib.fileset.fileFilter filesetFilter src;
+                };
                 defaultEnv = [
                   "PYTHONPATH=${depsLayer}/lib/python${python.pythonVersion}/site-packages:${python}/lib/python${python.pythonVersion}/site-packages"
                   "LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath ([ pkgs.stdenv.cc.cc.lib ] ++ runtimeLibs)}"
                   "PATH=${depsLayer}/bin:${python}/bin:/bin"
                 ];
               in
-              nix2container.packages.${system}.nix2container.buildImage {
+              (nix2container.packages.${system}.nix2container.buildImage {
                 inherit name;
                 config = {
                   WorkingDir = "/src";
@@ -79,16 +84,14 @@
                   (nix2container.packages.${system}.nix2container.buildLayer { deps = [ depsLayer ]; })
                   (nix2container.packages.${system}.nix2container.buildLayer { deps = ([ python ] ++ runtimeLibs); })
                   (nix2container.packages.${system}.nix2container.buildLayer {
-                    copyToRoot = [
-                      pkgs.lib.fileset.toSource
-                      {
-                        root = src;
-                        fileset = pkgs.lib.fileset.fileFilter filesetFilter src;
-                      }
-                    ];
+                    copyToRoot = [ sourcesLayer ];
                   })
                 ];
-              };
+              }).overrideAttrs (old: {
+                buildInputs = [ python ] ++ extraBuildInputs;
+                nativeBuildInputs = [ pkgs.uv ];
+                propagatedBuildInputs = runtimeLibs;
+              });
           };
         };
       in
@@ -96,9 +99,11 @@
         lib = lib;
 
         packages = rec {
-          example-flask-app = lib.uv2container.buildImage {
-            name = "example-flask-app";
+          example-flask-app = let
             python = pkgs.python314;
+          in lib.uv2container.buildImage {
+            name = "example-flask-app";
+            inherit python;
             src = ./examples/flask-app;
             cmd = [ "python" "-m" "flask" "run" "--host=0.0.0.0" ];
             extraConfig = {
@@ -114,8 +119,6 @@
         devShells.default = pkgs.mkShell {
           inputsFrom = [ self.packages.${system}.example-flask-app ];
           packages = with pkgs; [
-            python314
-            uv
             nil
             nixpkgs-fmt
           ];
