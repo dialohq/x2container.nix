@@ -38,10 +38,7 @@
                   mkdir -p $VIRTUAL_ENV
                   uv venv
                   uv sync --no-cache --no-install-project --locked
-                '';
-                installPhase = ''
-                  runHook preInstall
-                  runHook postInstall
+                  runHook postBuild
                 '';
               };
 
@@ -55,6 +52,7 @@
               , runtimeLibs ? [ ]
               , filesetFilter ? defaultFilesetFilter
               , config ? { }
+              , extraLayers ? [ ]
               }:
               let
                 depsLayer = buildDepsLayer {
@@ -82,7 +80,7 @@
                   (nix2container.packages.${system}.nix2container.buildLayer {
                     copyToRoot = [ sourcesLayer ];
                   })
-                ];
+                ] ++ extraLayers;
               }).overrideAttrs (old: {
                 buildInputs = [ python ] ++ extraBuildInputs;
                 nativeBuildInputs = [ pkgs.uv ];
