@@ -32,6 +32,7 @@
                   export UV_LINK_MODE=copy
                   export PATH=".venv/bin:$PATH"
                   export UV_PYTHON_PREFERENCE="only-system"
+                  export UV_CACHE_DIR="$PWD/.uv_cache"
                   export UV_PYTHON="${python}/bin/python${python.pythonVersion}"
                   export VIRTUAL_ENV=$out
                   export UV_PROJECT_ENVIRONMENT=$out
