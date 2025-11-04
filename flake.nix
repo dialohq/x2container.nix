@@ -65,10 +65,10 @@
                 pkgs.lib.fileset.toSource
                 {
                   root = src;
-                  fileset = pkgs.lib.fileset.traceVal (pkgs.lib.fileset.unions [
+                  fileset = pkgs.lib.fileset.unions [
                     (src + "/uv.lock")
                     (src + "/pyproject.toml")
-                  ]);
+                  ];
                 };
             };
             sourcesLayer =
