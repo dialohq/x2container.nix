@@ -42,7 +42,7 @@
                 export UV_PROJECT_ENVIRONMENT=$out
                 mkdir -p $VIRTUAL_ENV
                 uv venv
-                uv sync --no-cache --no-install-project --locked
+                uv sync --no-cache --no-install-project --all-packages --locked --no-editable
                 runHook postBuild
               '';
             };
@@ -53,23 +53,47 @@
             name,
             python,
             src,
+            members ? [],
+            localDeps ? [],
             extraBuildInputs ? [],
             runtimeLibs ? [],
             filesetFilter ? defaultFilesetFilter,
             config ? {},
+            uvOverride ? pkgs.uv,
             extraLayers ? [],
+            useNCTK ? false,
+            runtimeExecutableDeps ? [],
           }: let
+            memberMetadataCandidates =
+              builtins.concatMap
+              (member: [
+                (src + "/${member}/pyproject.toml")
+                (src + "/${member}/uv.lock")
+                (src + "/${member}/__init__.py")
+              ])
+              members;
+
+            dependencyMetadataFiles = builtins.filter builtins.pathExists (
+              [
+                (src + "/uv.lock")
+                (src + "/pyproject.toml")
+              ]
+              ++ memberMetadataCandidates
+            );
+
+            localDependencyFiles = builtins.filter builtins.pathExists (
+              builtins.map (dep: src + "/${dep}") localDeps
+            );
+
             depsLayer = buildDepsLayer {
               inherit python extraBuildInputs;
               src =
                 pkgs.lib.fileset.toSource
                 {
                   root = src;
-                  fileset = pkgs.lib.fileset.unions [
-                    (src + "/uv.lock")
-                    (src + "/pyproject.toml")
-                  ];
+                  fileset = pkgs.lib.fileset.unions (dependencyMetadataFiles ++ localDependencyFiles);
                 };
+              uv = uvOverride;
             };
             sourcesLayer =
               pkgs.lib.fileset.toSource
@@ -79,8 +103,13 @@
               };
             defaultEnv = [
               "PYTHONPATH=${depsLayer}/lib/python${python.pythonVersion}/site-packages:${python}/lib/python${python.pythonVersion}/site-packages"
-              "LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath ([pkgs.stdenv.cc.cc.lib] ++ runtimeLibs)}"
-              "PATH=${depsLayer}/bin:${python}/bin:/bin"
+              ("LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath ([pkgs.stdenv.cc.cc.lib] ++ runtimeLibs)}"
+                + (
+                  if useNCTK
+                  then ":/usr/local/nvidia/lib"
+                  else ""
+                ))
+              ("PATH=${depsLayer}/bin:${python}/bin:/bin:" + (pkgs.lib.strings.concatMapStringsSep ":" (dep: "${dep}/bin") runtimeExecutableDeps))
             ];
           in
             (nix2container.packages.${system}.nix2container.buildImage {
