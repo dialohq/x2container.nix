@@ -106,9 +106,10 @@
               ("LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath ([pkgs.stdenv.cc.cc.lib] ++ runtimeLibs)}"
                 + (
                   if useNCTK
-                  then ":/usr/local/nvidia/lib"
+                  then ":/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
                   else ""
                 ))
+              "LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
               ("PATH=${depsLayer}/bin:${python}/bin:/bin:" + (pkgs.lib.strings.concatMapStringsSep ":" (dep: "${dep}/bin") runtimeExecutableDeps))
             ];
           in
