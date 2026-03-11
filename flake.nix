@@ -102,17 +102,22 @@
                 root = src;
                 fileset = pkgs.lib.fileset.fileFilter filesetFilter src;
               };
-            defaultEnv = [
-              "PYTHONPATH=${depsLayer}/lib/python${python.pythonVersion}/site-packages:${python}/lib/python${python.pythonVersion}/site-packages"
-              ("LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath ([pkgs.stdenv.cc.cc.lib] ++ runtimeLibs)}"
-                + (
-                  if useNCTK
-                  then ":/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
-                  else ""
-                ))
-              "LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
-              ("PATH=${depsLayer}/bin:${python}/bin:/bin:" + (pkgs.lib.strings.concatMapStringsSep ":" (dep: "${dep}/bin") runtimeExecutableDeps))
-            ];
+            defaultEnv =
+              [
+                "PYTHONPATH=${depsLayer}/lib/python${python.pythonVersion}/site-packages:${python}/lib/python${python.pythonVersion}/site-packages"
+                ("LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath ([pkgs.stdenv.cc.cc.lib] ++ runtimeLibs)}"
+                  + (
+                    if useNCTK
+                    then ":/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
+                    else ""
+                  ))
+                ("PATH=${depsLayer}/bin:${python}/bin:/bin:" + (pkgs.lib.strings.concatMapStringsSep ":" (dep: "${dep}/bin") runtimeExecutableDeps))
+              ]
+              ++ (
+                if useNCTK
+                then ["LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64"]
+                else []
+              );
           in
             (nix2container.packages.${system}.nix2container.buildImage {
                 inherit name;
