@@ -56,6 +56,7 @@
             members ? [],
             localDeps ? [],
             extraBuildInputs ? [],
+            baseImage ? "",
             runtimeLibs ? [],
             filesetFilter ? defaultFilesetFilter,
             config ? {},
@@ -114,28 +115,33 @@
             ];
           in
             (nix2container.packages.${system}.nix2container.buildImage {
-              inherit name;
-              config =
-                config
-                // {
-                  Env =
-                    defaultEnv
-                    ++ (
-                      if builtins.hasAttr "Env" config
-                      then config.Env
-                      else []
-                    );
-                };
-              layers =
-                [
-                  (nix2container.packages.${system}.nix2container.buildLayer {deps = [depsLayer];})
-                  (nix2container.packages.${system}.nix2container.buildLayer {deps = [python] ++ runtimeLibs;})
-                  (nix2container.packages.${system}.nix2container.buildLayer {
-                    copyToRoot = [sourcesLayer];
-                  })
-                ]
-                ++ extraLayers;
-            }).overrideAttrs (old: {
+                inherit name;
+                config =
+                  config
+                  // {
+                    Env =
+                      defaultEnv
+                      ++ (
+                        if builtins.hasAttr "Env" config
+                        then config.Env
+                        else []
+                      );
+                  };
+                layers =
+                  [
+                    (nix2container.packages.${system}.nix2container.buildLayer {deps = [depsLayer];})
+                    (nix2container.packages.${system}.nix2container.buildLayer {deps = [python] ++ runtimeLibs;})
+                    (nix2container.packages.${system}.nix2container.buildLayer {
+                      copyToRoot = [sourcesLayer];
+                    })
+                  ]
+                  ++ extraLayers;
+              }
+              // (
+                if baseImage != ""
+                then {fromImage = baseImage;}
+                else {}
+              )).overrideAttrs (old: {
               buildInputs = [python] ++ extraBuildInputs;
               nativeBuildInputs = [pkgs.uv];
               propagatedBuildInputs = runtimeLibs;
