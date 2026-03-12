@@ -56,7 +56,7 @@
             members ? [],
             localDeps ? [],
             extraBuildInputs ? [],
-            baseImage ? "",
+            baseImage ? {},
             runtimeLibs ? [],
             filesetFilter ? defaultFilesetFilter,
             config ? {},
@@ -111,7 +111,7 @@
                     then ":/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
                     else ""
                   ))
-                ("PATH=${depsLayer}/bin:${python}/bin:/bin:" + (pkgs.lib.strings.concatMapStringsSep ":" (dep: "${dep}/bin") runtimeExecutableDeps))
+                ("PATH=${depsLayer}/bin:${python}/bin:/bin:/usr/bin:" + (pkgs.lib.strings.concatMapStringsSep ":" (dep: "${dep}/bin") runtimeExecutableDeps))
               ]
               ++ (
                 if useNCTK
@@ -119,7 +119,7 @@
                 else []
               );
           in
-            (nix2container.packages.${system}.nix2container.buildImage {
+            (nix2container.packages.${system}.nix2container.buildImage ({
                 inherit name;
                 config =
                   config
@@ -143,10 +143,13 @@
                   ++ extraLayers;
               }
               // (
-                if baseImage != ""
-                then {fromImage = baseImage;}
+                if baseImage ? imageName
+                then let
+                  _ = lib.debug.traceVal "Pulling image: ${baseImage.imageName}";
+                  ubuntu = nix2container.packages.${system}.nix2container.pullImage baseImage;
+                in {fromImage = ubuntu;}
                 else {}
-              )).overrideAttrs (old: {
+              ))).overrideAttrs (old: {
               buildInputs = [python] ++ extraBuildInputs;
               nativeBuildInputs = [pkgs.uv];
               propagatedBuildInputs = runtimeLibs;
