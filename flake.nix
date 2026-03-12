@@ -3,6 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgsUv.url = "github:NixOS/nixpkgs/nixos-unstable";
     nix2container.url = "github:nlewo/nix2container";
     nix2container.inputs.nixpkgs.follows = "nixpkgs";
     flake-utils.url = "github:numtide/flake-utils";
@@ -11,17 +12,18 @@
   outputs = {
     self,
     nixpkgs,
+    nixpkgsUv,
     nix2container,
     flake-utils,
   }:
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = import nixpkgs {inherit system;};
+      pkgsUv = import nixpkgsUv {inherit system;};
 
       lib = {
         uv2container = rec {
           buildDepsLayer = {
             python,
-            uv ? pkgs.uv,
             src,
             extraBuildInputs ? [],
           }:
@@ -30,7 +32,7 @@
               inherit src;
               __noChroot = true;
               dontFixup = true;
-              nativeBuildInputs = [python uv] ++ extraBuildInputs;
+              nativeBuildInputs = [python pkgsUv.uv] ++ extraBuildInputs;
               buildPhase = ''
                 runHook preBuild
                 export UV_LINK_MODE=copy
@@ -57,10 +59,10 @@
             localDeps ? [],
             extraBuildInputs ? [],
             baseImage ? {},
-            runtimeLibs ? [],
+            extraLdLibraryPath ? [],
+            extraLibraryPath ? [],
             filesetFilter ? defaultFilesetFilter,
             config ? {},
-            uvOverride ? pkgs.uv,
             extraLayers ? [],
             useNCTK ? false,
             runtimeExecutableDeps ? [],
@@ -94,7 +96,6 @@
                   root = src;
                   fileset = pkgs.lib.fileset.unions (dependencyMetadataFiles ++ localDependencyFiles);
                 };
-              uv = uvOverride;
             };
             sourcesLayer =
               pkgs.lib.fileset.toSource
@@ -102,22 +103,22 @@
                 root = src;
                 fileset = pkgs.lib.fileset.fileFilter filesetFilter src;
               };
-            defaultEnv =
-              [
-                "PYTHONPATH=${depsLayer}/lib/python${python.pythonVersion}/site-packages:${python}/lib/python${python.pythonVersion}/site-packages"
-                ("LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath ([pkgs.stdenv.cc.cc.lib] ++ runtimeLibs)}"
-                  + (
-                    if useNCTK
-                    then ":/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
-                    else ""
-                  ))
-                ("PATH=${depsLayer}/bin:${python}/bin:/bin:/usr/bin:" + (pkgs.lib.strings.concatMapStringsSep ":" (dep: "${dep}/bin") runtimeExecutableDeps))
-              ]
-              ++ (
-                if useNCTK
-                then ["LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64"]
-                else []
-              );
+            defaultEnv = [
+              "PYTHONPATH=${depsLayer}/lib/python${python.pythonVersion}/site-packages:${python}/lib/python${python.pythonVersion}/site-packages"
+              ("LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath ([pkgs.stdenv.cc.cc.lib] ++ extraLdLibraryPath)}"
+                + (
+                  if useNCTK
+                  then ":/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
+                  else ""
+                ))
+              ("PATH=${depsLayer}/bin:${python}/bin:/bin:/usr/bin:" + (pkgs.lib.strings.concatMapStringsSep ":" (dep: "${dep}/bin") runtimeExecutableDeps))
+              ("LIBRARY_PATH=${pkgs.lib.makeLibraryPath extraLibraryPath}"
+                + (
+                  if useNCTK
+                  then ":/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
+                  else ""
+                ))
+            ];
           in
             (nix2container.packages.${system}.nix2container.buildImage ({
                 inherit name;
@@ -135,7 +136,7 @@
                 layers =
                   [
                     (nix2container.packages.${system}.nix2container.buildLayer {deps = [depsLayer];})
-                    (nix2container.packages.${system}.nix2container.buildLayer {deps = [python] ++ runtimeLibs;})
+                    (nix2container.packages.${system}.nix2container.buildLayer {deps = [python] ++ extraLdLibraryPath;})
                     (nix2container.packages.${system}.nix2container.buildLayer {
                       copyToRoot = [sourcesLayer];
                     })
@@ -144,15 +145,12 @@
               }
               // (
                 if baseImage ? imageName
-                then let
-                  _ = lib.debug.traceVal "Pulling image: ${baseImage.imageName}";
-                  ubuntu = nix2container.packages.${system}.nix2container.pullImage baseImage;
-                in {fromImage = ubuntu;}
+                then {fromImage = nix2container.packages.${system}.nix2container.pullImage baseImage;}
                 else {}
               ))).overrideAttrs (old: {
               buildInputs = [python] ++ extraBuildInputs;
-              nativeBuildInputs = [pkgs.uv];
-              propagatedBuildInputs = runtimeLibs;
+              nativeBuildInputs = [pkgsUv.uv];
+              propagatedBuildInputs = extraLdLibraryPath;
             });
         };
       };
