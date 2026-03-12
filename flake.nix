@@ -59,12 +59,13 @@
             localDeps ? [],
             extraBuildInputs ? [],
             baseImage ? {},
-            extraLdLibraryPath ? [],
-            extraLibraryPath ? [],
+            runtimeLibs ? [],
+            libs ? [],
+            extraLdLibraryPath ? "",
+            extraLibraryPath ? "",
             filesetFilter ? defaultFilesetFilter,
             config ? {},
             extraLayers ? [],
-            useNCTK ? false,
             runtimeExecutableDeps ? [],
           }: let
             memberMetadataCandidates =
@@ -105,19 +106,15 @@
               };
             defaultEnv = [
               "PYTHONPATH=${depsLayer}/lib/python${python.pythonVersion}/site-packages:${python}/lib/python${python.pythonVersion}/site-packages"
-              ("LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath ([pkgs.stdenv.cc.cc.lib] ++ extraLdLibraryPath)}"
-                + (
-                  if useNCTK
-                  then ":/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
-                  else ""
-                ))
               ("PATH=${depsLayer}/bin:${python}/bin:/bin:/usr/bin:" + (pkgs.lib.strings.concatMapStringsSep ":" (dep: "${dep}/bin") runtimeExecutableDeps))
-              ("LIBRARY_PATH=${pkgs.lib.makeLibraryPath extraLibraryPath}"
-                + (
-                  if useNCTK
-                  then ":/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
-                  else ""
-                ))
+              (
+                "LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath ([pkgs.stdenv.cc.cc.lib] ++ runtimeLibs)}"
+                + extraLdLibraryPath
+              )
+              (
+                "LIBRARY_PATH=${pkgs.lib.makeLibraryPath ([pkgs.stdenv.cc.cc.lib] ++ libs)}"
+                + extraLibraryPath
+              )
             ];
           in
             (nix2container.packages.${system}.nix2container.buildImage ({
@@ -136,7 +133,7 @@
                 layers =
                   [
                     (nix2container.packages.${system}.nix2container.buildLayer {deps = [depsLayer];})
-                    (nix2container.packages.${system}.nix2container.buildLayer {deps = [python] ++ extraLdLibraryPath;})
+                    (nix2container.packages.${system}.nix2container.buildLayer {deps = [python] ++ runtimeLibs;})
                     (nix2container.packages.${system}.nix2container.buildLayer {
                       copyToRoot = [sourcesLayer];
                     })
@@ -150,7 +147,7 @@
               ))).overrideAttrs (old: {
               buildInputs = [python] ++ extraBuildInputs;
               nativeBuildInputs = [pkgsUv.uv];
-              propagatedBuildInputs = extraLdLibraryPath;
+              propagatedBuildInputs = runtimeLibs;
             });
         };
       };
