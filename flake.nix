@@ -3,7 +3,6 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    nixpkgsUv.url = "github:NixOS/nixpkgs/nixos-unstable";
     nix2container.url = "github:nlewo/nix2container";
     nix2container.inputs.nixpkgs.follows = "nixpkgs";
     flake-utils.url = "github:numtide/flake-utils";
@@ -12,13 +11,11 @@
   outputs = {
     self,
     nixpkgs,
-    nixpkgsUv,
     nix2container,
     flake-utils,
   }:
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = import nixpkgs {inherit system;};
-      pkgsUv = import nixpkgsUv {inherit system;};
 
       lib = {
         uv2container = rec {
@@ -32,7 +29,7 @@
               inherit src;
               __noChroot = true;
               dontFixup = true;
-              nativeBuildInputs = [python pkgsUv.uv] ++ extraBuildInputs;
+              nativeBuildInputs = [python pkgs.uv] ++ extraBuildInputs;
               buildPhase = ''
                 runHook preBuild
                 export UV_LINK_MODE=copy
@@ -146,7 +143,7 @@
                 else {}
               ))).overrideAttrs (old: {
               buildInputs = [python] ++ extraBuildInputs;
-              nativeBuildInputs = [pkgsUv.uv];
+              nativeBuildInputs = [pkgs.uv];
               propagatedBuildInputs = runtimeLibs;
             });
         };
