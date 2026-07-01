@@ -20,9 +20,7 @@
     },
     "nix2container": {
       "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
+        "nixpkgs": "nixpkgs"
       },
       "locked": {
         "lastModified": 1767430085,
@@ -39,6 +37,21 @@
       }
     },
     "nixpkgs": {
+      "locked": {
+        "lastModified": 1782905133,
+        "narHash": "sha256-pAPP0qjljHFEJ9Nw94CuYWOl1nUeybAAUCMYmXULeg8=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "ee6ca4145bbd7f48a82110505c7a736b9715cb3e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs_2": {
       "locked": {
         "lastModified": 1738680400,
         "narHash": "sha256-ooLh+XW8jfa+91F1nhf9OF7qhuA/y1ChLx6lXDNeY5U=",
@@ -58,7 +71,7 @@
       "inputs": {
         "flake-utils": "flake-utils",
         "nix2container": "nix2container",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs_2"
       }
     },
     "systems": {

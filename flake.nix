@@ -22,6 +22,7 @@
             python,
             src,
             extraBuildInputs ? [],
+            cache ? null,
           }:
             pkgs.stdenv.mkDerivation {
               name = "python-venv";
@@ -31,7 +32,41 @@
               nativeBuildInputs = [python pkgs.uv] ++ extraBuildInputs;
               buildPhase = ''
                 runHook preBuild
-                export UV_LINK_MODE=copy
+                ${
+                  if cache != null
+                  then ''
+                    cp -r ${cache}/* $TMPDIR/.uv_cache
+                  ''
+                  else ""
+                }
+
+                export PATH=".venv/bin:$PATH"
+                export UV_PYTHON_PREFERENCE="only-system"
+                export UV_CACHE_DIR="$TMPDIR/.uv_cache"
+                export UV_PYTHON="${python}/bin/python${python.pythonVersion}"
+                export VIRTUAL_ENV=$out
+                export UV_PROJECT_ENVIRONMENT=$out
+                mkdir -p $VIRTUAL_ENV
+                uv venv
+                uv sync --no-install-project --all-packages --locked --no-editable
+                runHook postBuild
+              '';
+            };
+
+          buildCache = {
+            python,
+            src,
+            extraBuildInputs ? [],
+            group,
+          }:
+            pkgs.stdenv.mkDerivation {
+              name = "python-venv";
+              inherit src;
+              __noChroot = true;
+              dontFixup = true;
+              nativeBuildInputs = [python pkgs.uv] ++ extraBuildInputs;
+              buildPhase = ''
+                runHook preBuild
                 export PATH=".venv/bin:$PATH"
                 export UV_PYTHON_PREFERENCE="only-system"
                 export UV_CACHE_DIR="$PWD/.uv_cache"
@@ -39,8 +74,10 @@
                 export VIRTUAL_ENV=$out
                 export UV_PROJECT_ENVIRONMENT=$out
                 mkdir -p $VIRTUAL_ENV
+                mkdir -p $UV_CACHE_DIR
                 uv venv
-                uv sync --no-cache --no-install-project --all-packages --locked --no-editable
+                uv sync --no-install-project --all-packages --locked --no-editable --only-group ${group}
+                cp $UV_CACHE_DIR $out
                 runHook postBuild
               '';
             };
@@ -63,6 +100,7 @@
             config ? {},
             extraLayers ? [],
             runtimeExecutableDeps ? [],
+            cacheGroupName ? null,
           }: let
             memberMetadataCandidates =
               builtins.concatMap
@@ -85,8 +123,24 @@
               builtins.map (dep: src + "/${dep}") localDeps
             );
 
+            cachedLayer =
+              if cacheGroupName != null
+              then
+                buildCache {
+                  inherit python extraBuildInputs;
+                  src =
+                    pkgs.lib.fileset.toSource
+                    {
+                      root = src;
+                      fileset = pkgs.lib.fileset.unions (dependencyMetadataFiles ++ localDependencyFiles);
+                    };
+                  group = cacheGroupName;
+                }
+              else null;
+
             depsLayer = buildDepsLayer {
               inherit python extraBuildInputs;
+              cache = cachedLayer;
               src =
                 pkgs.lib.fileset.toSource
                 {
