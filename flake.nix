@@ -59,7 +59,7 @@
             python,
             src,
             extraBuildInputs ? [],
-            group,
+            indexes ? [],
           }:
             pkgs.stdenv.mkDerivation {
               name = "python-venv";
@@ -69,17 +69,41 @@
               nativeBuildInputs = [python pkgs.uv] ++ extraBuildInputs;
               buildPhase = ''
                 runHook preBuild
-                export PATH=".venv/bin:$PATH"
                 export UV_PYTHON_PREFERENCE="only-system"
                 export UV_CACHE_DIR="$PWD/.uv_cache"
                 export UV_PYTHON="${python}/bin/python${python.pythonVersion}"
-                export VIRTUAL_ENV=$out
-                export UV_PROJECT_ENVIRONMENT=$out
-                mkdir -p $VIRTUAL_ENV
+                export VIRTUAL_ENV="$PWD/.venv"
+                export PATH="$VIRTUAL_ENV/bin:$PATH"
+                mkdir -p $out
                 mkdir -p $UV_CACHE_DIR
                 uv venv
-                uv sync --no-install-project --all-packages --locked --no-editable --only-group ${group}
+                uv pip install -r requirements.txt ${pkgs.lib.strings.concatMapStringsSep " " (i: "--extra-index-url ${i}") indexes}
                 cp -r $UV_CACHE_DIR/* $out
+                runHook postBuild
+              '';
+            };
+          cacheRequirements = {
+            python,
+            src,
+            extraBuildInputs ? [],
+            group,
+          }:
+            pkgs.stdenv.mkDerivation {
+              name = "python-venv";
+              inherit src;
+              __noChroot = true;
+              __contentAddressed = true;
+              dontFixup = true;
+              nativeBuildInputs = [python pkgs.uv] ++ extraBuildInputs;
+              buildPhase = ''
+                runHook preBuild
+                export PATH=".venv/bin:$PATH"
+                export UV_PYTHON_PREFERENCE="only-system"
+                export UV_PYTHON="${python}/bin/python${python.pythonVersion}"
+                export UV_PROJECT_ENVIRONMENT=$out
+
+                mkdir -p $out
+                uv export --group ${group} > $out/requirements.txt
                 runHook postBuild
               '';
             };
@@ -103,6 +127,7 @@
             extraLayers ? [],
             runtimeExecutableDeps ? [],
             cacheGroupName ? null,
+            cacheGroupIndexes ? [],
           }: let
             memberMetadataCandidates =
               builtins.concatMap
@@ -130,13 +155,11 @@
               then
                 buildCache {
                   inherit python extraBuildInputs;
-                  src =
-                    pkgs.lib.fileset.toSource
-                    {
-                      root = src;
-                      fileset = pkgs.lib.fileset.unions (dependencyMetadataFiles ++ localDependencyFiles);
-                    };
-                  group = cacheGroupName;
+                  src = cacheRequirements {
+                    inherit python extraBuildInputs src;
+                    group = cacheGroupName;
+                  };
+                  indexes = cacheGroupIndexes;
                 }
               else null;
 
