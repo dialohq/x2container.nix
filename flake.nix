@@ -35,7 +35,8 @@
                 ${
                   if cache != null
                   then ''
-                    cp -r ${cache}/* $TMPDIR/.uv_cache
+                    mkdir -p $TMPDIR/.uv_cache/
+                    cp -r ${cache}/* $TMPDIR/.uv_cache/
                   ''
                   else ""
                 }
@@ -77,7 +78,7 @@
                 mkdir -p $UV_CACHE_DIR
                 uv venv
                 uv sync --no-install-project --all-packages --locked --no-editable --only-group ${group}
-                cp $UV_CACHE_DIR $out
+                cp -r $UV_CACHE_DIR/* $out
                 runHook postBuild
               '';
             };
