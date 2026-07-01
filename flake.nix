@@ -26,6 +26,7 @@
           }:
             pkgs.stdenv.mkDerivation {
               name = "deps-layer-venv";
+              NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
               inherit src;
               __noChroot = true;
               dontFixup = true;
