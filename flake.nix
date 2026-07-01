@@ -37,6 +37,7 @@
                   then ''
                     mkdir -p $TMPDIR/.uv_cache/
                     cp -r ${cache}/* $TMPDIR/.uv_cache/
+                    chmod -R u+w $TMPDIR/.uv_cache
                   ''
                   else ""
                 }
