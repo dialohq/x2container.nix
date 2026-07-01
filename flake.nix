@@ -72,11 +72,11 @@
                 export UV_PYTHON_PREFERENCE="only-system"
                 export UV_CACHE_DIR="$PWD/.uv_cache"
                 export UV_PYTHON="${python}/bin/python${python.pythonVersion}"
-                export VIRTUAL_ENV="$PWD/.venv"
                 export PATH="$VIRTUAL_ENV/bin:$PATH"
                 mkdir -p $out
                 mkdir -p $UV_CACHE_DIR
                 uv venv
+                source .venv/bin/activate
                 uv pip install -r requirements.txt ${pkgs.lib.strings.concatMapStringsSep " " (i: "--extra-index-url ${i}") indexes}
                 cp -r $UV_CACHE_DIR/* $out
                 runHook postBuild
