@@ -25,7 +25,7 @@
             cache ? null,
           }:
             pkgs.stdenv.mkDerivation {
-              name = "python-venv";
+              name = "deps-layer-venv";
               inherit src;
               __noChroot = true;
               dontFixup = true;
@@ -62,7 +62,7 @@
             indexes ? [],
           }:
             pkgs.stdenv.mkDerivation {
-              name = "python-venv";
+              name = "build-cache";
               inherit src;
               __noChroot = true;
               dontFixup = true;
@@ -89,7 +89,7 @@
             group,
           }:
             pkgs.stdenv.mkDerivation {
-              name = "python-venv";
+              name = "cache-requirements";
               inherit src;
               __noChroot = true;
               __contentAddressed = true;
