@@ -71,7 +71,7 @@
                 runHook preBuild
                 export UV_PYTHON_PREFERENCE="only-system"
                 export UV_CACHE_DIR="$PWD/.uv_cache"
-                export UV_PYTHON="${python}/bin/python${python.pythonVersion}"
+                # export UV_PYTHON="${python}/bin/python${python.pythonVersion}"
                 export PATH="$VIRTUAL_ENV/bin:$PATH"
                 mkdir -p $out
                 mkdir -p $UV_CACHE_DIR
