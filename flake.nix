@@ -101,10 +101,12 @@
                 export UV_PYTHON_PREFERENCE="only-system"
                 export UV_CACHE_DIR="$TMPDIR/.uv_cache"
                 export UV_PYTHON="${python}/bin/python${python.pythonVersion}"
-                export UV_PROJECT_ENVIRONMENT=$out
+                # export UV_PROJECT_ENVIRONMENT=$out
 
                 mkdir -p $UV_CACHE_DIR
                 mkdir -p $out
+                echo "path: $PATH"
+                # uv venv
                 uv export --group ${group} > $out/requirements.txt
                 runHook postBuild
               '';
