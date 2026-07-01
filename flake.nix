@@ -77,7 +77,8 @@
                 mkdir -p $UV_CACHE_DIR
                 uv venv
                 source .venv/bin/activate
-                uv add -r requirements.txt ${pkgs.lib.strings.concatMapStringsSep " " (i: "--extra-index-url ${i}") indexes}
+                uv init
+                uv add -r requirements.txt ${pkgs.lib.strings.concatMapStringsSep " " (i: "--index ${i}") indexes}
                 uv sync --no-install-project --all-packages --locked --no-editable
                 cp -r $UV_CACHE_DIR/* $out
                 runHook postBuild
