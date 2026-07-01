@@ -78,7 +78,7 @@
                 uv venv
                 source .venv/bin/activate
                 uv init
-                uv add -r requirements.txt ${pkgs.lib.strings.concatMapStringsSep " " (i: "--index ${i}") indexes}
+                uv add -r requirements.txt ${pkgs.lib.strings.concatMapStringsSep " " (i: "--index ${i}") indexes} --index-strategy unsafe-best-match
                 uv sync --no-install-project --all-packages --locked --no-editable --index-strategy unsafe-best-match
                 cp -r $UV_CACHE_DIR/* $out
                 runHook postBuild
