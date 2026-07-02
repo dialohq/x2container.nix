@@ -30,9 +30,6 @@
             # Derivations (from exportRequirements) whose packages.txt are
             # subtracted from this export.
             excludeFrom ? [],
-            # Optional derivation whose packages.txt limits this export:
-            # packages outside it are dropped (never added to the image).
-            restrictTo ? null,
             extraBuildInputs ? [],
           }:
             pkgs.stdenv.mkDerivation {
@@ -58,34 +55,16 @@
                   '')
                   excludeFrom
                 }
-                pylock_names() {
-                  python3 -c '
+                uv export --locked --format pylock.toml --no-annotate --no-header \
+                  ${pkgs.lib.escapeShellArgs exportArgs} "''${exclude_args[@]}" \
+                  -o $out/pylock.toml
+                python3 -c '
                 import sys, tomllib
                 with open(sys.argv[1], "rb") as f:
                     data = tomllib.load(f)
                 for name in sorted({p["name"] for p in data.get("packages", [])}):
                     print(name)
-                ' "$1"
-                }
-
-                ${
-                  if restrictTo != null
-                  then ''
-                    uv export --locked --format pylock.toml --no-annotate --no-header \
-                      ${pkgs.lib.escapeShellArgs exportArgs} -o "$TMPDIR/pylock.probe.toml"
-                    pylock_names "$TMPDIR/pylock.probe.toml" > "$TMPDIR/mine.txt"
-                    comm -23 "$TMPDIR/mine.txt" ${restrictTo}/packages.txt > "$TMPDIR/drop.txt"
-                    while IFS= read -r p; do
-                      [ -n "$p" ] && exclude_args+=(--no-emit-package "$p")
-                    done < "$TMPDIR/drop.txt"
-                  ''
-                  else ""
-                }
-
-                uv export --locked --format pylock.toml --no-annotate --no-header \
-                  ${pkgs.lib.escapeShellArgs exportArgs} "''${exclude_args[@]}" \
-                  -o $out/pylock.toml
-                pylock_names $out/pylock.toml > $out/packages.txt
+                ' $out/pylock.toml > $out/packages.txt
                 runHook postBuild
               '';
             };
@@ -207,16 +186,19 @@
             # its own cached derivation/layer keyed on the wheel.
             memberWheels ? {},
             # How third-party dependencies are split into image layers:
-            #   "flat"      — one layer with the entire dependency set;
-            #   "autosplit" — one layer per [dependency-groups] entry of the
-            #                 root pyproject.toml (alphabetical) + a layer
-            #                 with the remainder;
-            #   [ "g1" .. ] — one layer per listed group, in order, + a layer
-            #                 with the remainder.
-            # A group layer holds (group closure ∩ shipped packages) minus
-            # packages claimed by earlier group layers. Group membership only
-            # controls layer placement — it never adds packages to the image.
-            dependencyLayers ? "flat",
+            #   "auto" (default) — every package whose largest artifact in
+            #     uv.lock is at least autoLayerThresholdMB gets its own layer;
+            #     the remainder forms one layer. Derived entirely from the
+            #     lock: nothing to declare, nothing to keep in sync.
+            #   "flat" — one layer with the entire dependency set;
+            #   { name = [ "pkg" .. ]; .. } — one layer per mask (alphabetical
+            #     by name) holding the uv.lock dependency closure of the
+            #     listed packages ∩ the shipped set, minus packages claimed by
+            #     earlier layers; the remainder forms its own layer.
+            # Layering only places packages that ship anyway (via the members'
+            # real dependency declarations) — it never adds anything.
+            dependencyLayers ? "auto",
+            autoLayerThresholdMB ? 32,
             # Optional build-time self-test command (argv list), run with the
             # image's runtime environment; the image build fails if it fails.
             imageCheck ? null,
@@ -240,16 +222,40 @@
               fileset = fileset.unions metadataFiles;
             };
 
-            effectiveGroups =
+            # Exact-package masks derived from uv.lock. A package gets its own
+            # layer if any artifact reaches the threshold, or if it is
+            # sdist-only: a source tarball's size says nothing about the
+            # installed size and its build is the most expensive to redo.
+            autoMasks = let
+              lock = builtins.fromTOML (builtins.readFile (src + "/uv.lock"));
+              maxWheel = p:
+                builtins.foldl' (a: b:
+                  if b > a
+                  then b
+                  else a)
+                0 (builtins.map (w: w.size or 0) (p.wheels or []));
+              sdistOnly = p: (p.wheels or []) == [] && p ? sdist;
+              big =
+                builtins.filter
+                (p: maxWheel p >= autoLayerThresholdMB * 1024 * 1024 || sdistOnly p)
+                (lock.package or []);
+            in
+              builtins.listToAttrs (builtins.map (p: {
+                  inherit (p) name;
+                  value = [p.name];
+                })
+                big);
+
+            # true = mask entries are closure seeds; false = exact packages.
+            masksAreClosures = builtins.isAttrs dependencyLayers;
+            layerMasks =
               if dependencyLayers == "flat"
-              then []
-              else if dependencyLayers == "autosplit"
-              then
-                builtins.attrNames
-                ((builtins.fromTOML (builtins.readFile (src + "/pyproject.toml"))).dependency-groups or {})
-              else if builtins.isList dependencyLayers
-              then pkgs.lib.unique dependencyLayers
-              else throw "dependencyLayers must be \"flat\", \"autosplit\", or a list of dependency-group names";
+              then {}
+              else if dependencyLayers == "auto"
+              then autoMasks
+              else if builtins.isAttrs dependencyLayers
+              then dependencyLayers
+              else throw "dependencyLayers must be \"auto\", \"flat\", or an attrset of { layerName = [ package names ]; }";
 
             allShippedRequirements = exportRequirements {
               inherit python extraBuildInputs;
@@ -258,22 +264,91 @@
               exportArgs = ["--all-packages" "--no-emit-project" "--no-emit-workspace" "--no-default-groups"];
             };
 
-            groupExports = builtins.foldl' (acc: g:
+            # Filter the shipped set down to the uv.lock dependency closure of
+            # the mask's package names, minus packages claimed by earlier
+            # layers. Pure lock-graph computation: masks never add packages.
+            closureRequirements = {
+              name,
+              seeds,
+              expandClosure,
+              excludeFrom ? [],
+            }:
+              pkgs.stdenv.mkDerivation {
+                name = "${name}-requirements";
+                src = metadataSrc;
+                __contentAddressed = true;
+                dontFixup = true;
+                nativeBuildInputs = [python];
+                EXPAND_CLOSURE =
+                  if expandClosure
+                  then "1"
+                  else "";
+                buildPhase = ''
+                  runHook preBuild
+                  mkdir -p $out
+                  cat ${pkgs.lib.escapeShellArgs (builtins.map (d: "${d}/packages.txt") excludeFrom)} /dev/null > claimed.txt
+                  python3 - uv.lock ${allShippedRequirements}/pylock.toml claimed.txt \
+                    ${pkgs.lib.escapeShellArgs seeds} <<'PYEOF'
+                  import os, re, sys, tomllib
+
+                  norm = lambda n: re.sub(r"[-_.]+", "-", n).lower()
+                  lock_path, pylock_path, claimed_path, *seeds = sys.argv[1:]
+
+                  closure = {norm(s) for s in seeds}
+                  if os.environ.get("EXPAND_CLOSURE"):
+                      lock = tomllib.load(open(lock_path, "rb"))
+                      edges = {}
+                      for p in lock.get("package", []):
+                          deps = [d["name"] for d in p.get("dependencies", [])]
+                          for extra in p.get("optional-dependencies", {}).values():
+                              deps += [d["name"] for d in extra]
+                          edges[norm(p["name"])] = {norm(d) for d in deps}
+                      todo = list(closure)
+                      closure = set()
+                      while todo:
+                          n = todo.pop()
+                          if n in closure:
+                              continue
+                          closure.add(n)
+                          todo += edges.get(n, ())
+
+                  claimed = {norm(l.strip()) for l in open(claimed_path) if l.strip()}
+
+                  text = open(pylock_path).read()
+                  blocks = text.split("[[packages]]")
+                  header, entries = blocks[0], blocks[1:]
+                  kept, names = [], []
+                  for b in entries:
+                      name = norm(tomllib.loads("[[packages]]" + b)["packages"][0]["name"])
+                      if name in closure and name not in claimed:
+                          kept.append(b)
+                          names.append(name)
+
+                  with open("out-pylock.toml", "w") as f:
+                      f.write(header + "".join("[[packages]]" + b for b in kept))
+                  with open("out-packages.txt", "w") as f:
+                      f.write("".join(n + "\n" for n in sorted(set(names))))
+                  PYEOF
+                  mv out-pylock.toml $out/pylock.toml
+                  mv out-packages.txt $out/packages.txt
+                  runHook postBuild
+                '';
+              };
+
+            groupExports = builtins.foldl' (acc: lname:
               acc
               ++ [
                 {
-                  group = g;
-                  export = exportRequirements {
-                    inherit python extraBuildInputs;
-                    src = metadataSrc;
-                    name = "group-${g}";
-                    exportArgs = ["--only-group" g];
-                    restrictTo = allShippedRequirements;
+                  group = lname;
+                  export = closureRequirements {
+                    name = "layer-${lname}";
+                    seeds = layerMasks.${lname};
+                    expandClosure = masksAreClosures;
                     excludeFrom = builtins.map (ge: ge.export) acc;
                   };
                 }
               ]) []
-            effectiveGroups;
+            (builtins.attrNames layerMasks);
 
             groupEnvs =
               builtins.map (ge:
@@ -379,28 +454,18 @@
                   touch $out
                 '';
 
-            # Most-stable first, chained so each store path ships once.
+            # Each env layer holds exactly its own venv: venvs are disjoint by
+            # construction (contents partitioned by name), so deduplication
+            # only needs to exclude the shared python/runtimeLibs closure.
             pythonLayer = n2c.buildLayer {deps = [python] ++ runtimeLibs;};
-            groupImageLayers = builtins.foldl' (acc: env:
-              acc
-              ++ [
-                (n2c.buildLayer {
-                  deps = [env];
-                  layers = [pythonLayer] ++ acc;
-                })
-              ]) []
-            groupEnvs;
-            depsLayer = n2c.buildLayer {
-              deps = [depsEnv];
-              layers = [pythonLayer] ++ groupImageLayers;
-            };
-            memberLayers =
-              builtins.map (env:
-                n2c.buildLayer {
-                  deps = [env];
-                  layers = [pythonLayer depsLayer] ++ groupImageLayers;
-                })
-              memberEnvs;
+            envLayer = env:
+              n2c.buildLayer {
+                deps = [env];
+                layers = [pythonLayer];
+              };
+            groupImageLayers = builtins.map envLayer groupEnvs;
+            depsLayer = envLayer depsEnv;
+            memberLayers = builtins.map envLayer memberEnvs;
           in
             (n2c.buildImage ({
                 inherit name;
@@ -451,7 +516,7 @@
             name = "example-flask-app";
             inherit python;
             src = ./examples/flask-app;
-            dependencyLayers = "autosplit";
+            dependencyLayers.web = ["flask"];
             config = {
               Cmd = ["python" "-m" "flask" "run" "--host=0.0.0.0"];
               WorkingDir = "/src";

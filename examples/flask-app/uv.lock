@@ -40,16 +40,8 @@ dependencies = [
     { name = "flask" },
 ]
 
-[package.dev-dependencies]
-web = [
-    { name = "flask" },
-]
-
 [package.metadata]
 requires-dist = [{ name = "flask", specifier = ">=3.0.0" }]
-
-[package.metadata.requires-dev]
-web = [{ name = "flask", specifier = ">=3.0.0" }]
 
 [[package]]
 name = "flask"
