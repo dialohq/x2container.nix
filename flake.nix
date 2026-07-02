@@ -87,6 +87,9 @@
             name,
             requirements,
             extraBuildInputs ? [],
+            # { packageName = [ file globs ]; }: files deleted from the venv
+            # shipping that package.
+            prunePackageFiles ? {},
           }:
             pkgs.stdenv.mkDerivation {
               inherit name;
@@ -106,6 +109,13 @@
                   uv pip install --python "$out/bin/python" --no-deps \
                     -r ${requirements}/pylock.toml
                 fi
+                ${pkgs.lib.concatStrings (pkgs.lib.mapAttrsToList (pkg: patterns: ''
+                    if grep -qxF ${pkgs.lib.escapeShellArg pkg} ${requirements}/packages.txt; then
+                      echo "pruning files of ${pkg}"
+                      find "$out" \( ${pkgs.lib.concatMapStringsSep " -o " (p: "-name ${pkgs.lib.escapeShellArg p}") patterns} \) -print -delete
+                    fi
+                  '')
+                  prunePackageFiles)}
                 ${scrubToolchainReferences}
                 runHook postBuild
               '';
@@ -202,6 +212,10 @@
             # Optional build-time self-test command (argv list), run with the
             # image's runtime environment; the image build fails if it fails.
             imageCheck ? null,
+            # { packageName = [ file globs ]; } deleted from the venv shipping
+            # that package (e.g. build-only payloads of runtime-consumed
+            # packages).
+            prunePackageFiles ? {},
             imageCheckEnv ? {},
           }: let
             inherit (pkgs.lib) fileset;
@@ -353,7 +367,7 @@
             groupEnvs =
               builtins.map (ge:
                 buildVenvFromRequirements {
-                  inherit python extraBuildInputs;
+                  inherit python extraBuildInputs prunePackageFiles;
                   name = "env-${ge.group}";
                   requirements = ge.export;
                 })
@@ -368,7 +382,7 @@
             };
 
             depsEnv = buildVenvFromRequirements {
-              inherit python extraBuildInputs;
+              inherit python extraBuildInputs prunePackageFiles;
               name = "env-deps";
               requirements = depsRequirements;
             };
