@@ -140,12 +140,18 @@
             src,
             memberPath,
             extraBuildInputs ? [],
+            # Optional derivation holding a prebuilt wheel (dir with *.whl).
+            # When set, the member is installed from that wheel instead of
+            # being built from source, and the env is keyed only on the wheel
+            # (member sources don't invalidate it). Use for members whose
+            # from-source build is expensive to cache — e.g. a maturin/Rust
+            # extension whose compiled dependencies live in their own layer.
+            wheel ? null,
           }:
-            pkgs.stdenv.mkDerivation {
+            pkgs.stdenv.mkDerivation ({
               inherit name;
               NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
               SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-              inherit src;
               __noChroot = true;
               dontFixup = true;
               nativeBuildInputs = [python pkgs.uv pkgs.removeReferencesTo] ++ extraBuildInputs;
@@ -155,11 +161,28 @@
                 export UV_PYTHON_PREFERENCE="only-system"
                 export UV_PYTHON="${python}/bin/python${python.pythonVersion}"
                 uv venv "$out"
-                uv pip install --python "$out/bin/python" --no-deps ./${memberPath}
+                ${
+                  if wheel != null
+                  then ''
+                    shopt -s nullglob
+                    wheels=(${wheel}/*.whl)
+                    if [ ''${#wheels[@]} -ne 1 ]; then
+                      echo "expected exactly one wheel in ${wheel}, found ''${#wheels[@]}: ''${wheels[*]}" >&2
+                      exit 1
+                    fi
+                    uv pip install --python "$out/bin/python" --no-deps "''${wheels[0]}"
+                  ''
+                  else ''uv pip install --python "$out/bin/python" --no-deps ./${memberPath}''
+                }
                 ${scrubToolchainReferences}
                 runHook postBuild
               '';
-            };
+            }
+            // (
+              if wheel != null
+              then {dontUnpack = true;}
+              else {inherit src;}
+            ));
 
           defaultFilesetFilter = file: file.hasExt "py";
 
@@ -178,6 +201,11 @@
             config ? {},
             extraLayers ? [],
             runtimeExecutableDeps ? [],
+            # Map of member path -> derivation holding a prebuilt wheel. Listed
+            # members install from their wheel instead of building from source
+            # (see buildMemberEnv's `wheel`), so an expensive compile lives in
+            # its own cached derivation/layer keyed on the wheel.
+            memberWheels ? {},
             # How third-party dependencies are split into image layers:
             #   "flat"      — one layer with the entire dependency set;
             #   "autosplit" — one layer per [dependency-groups] entry of the
@@ -296,6 +324,7 @@
                     fileset = fileset.unions (pyprojectFiles ++ [(memberFileset m)]);
                   };
                   memberPath = m;
+                  wheel = memberWheels.${m} or null;
                 })
               members;
 
