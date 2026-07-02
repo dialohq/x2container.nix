@@ -223,11 +223,22 @@
             sitePackages = env: "${env}/lib/python${python.pythonVersion}/site-packages";
 
             # Only metadata: member sources must not invalidate dependency
-            # layers.
-            pyprojectFiles = builtins.filter builtins.pathExists (
-              [(src + "/pyproject.toml")]
-              ++ builtins.map (m: src + "/${m}/pyproject.toml") members
-            );
+            # layers. uv validates the lock against the WHOLE workspace, so
+            # every workspace member's pyproject must be present — not only
+            # the members shipped in this image. (Literal member paths only;
+            # glob members in [tool.uv.workspace] are not expanded.)
+            pyprojectFiles = let
+              rootPyproject = src + "/pyproject.toml";
+              workspaceMembers =
+                if builtins.pathExists rootPyproject
+                then ((((builtins.fromTOML (builtins.readFile rootPyproject)).tool or {}).uv or {}).workspace or {}).members or []
+                else [];
+            in
+              builtins.filter builtins.pathExists (
+                [rootPyproject]
+                ++ builtins.map (m: src + "/${m}/pyproject.toml")
+                (pkgs.lib.unique (workspaceMembers ++ members))
+              );
             metadataFiles =
               builtins.filter builtins.pathExists [(src + "/uv.lock")]
               ++ pyprojectFiles;
