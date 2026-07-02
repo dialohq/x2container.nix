@@ -227,7 +227,7 @@
               inherit python extraBuildInputs;
               src = metadataSrc;
               name = "all-shipped";
-              exportArgs = ["--all-packages" "--no-emit-project" "--no-emit-workspace"];
+              exportArgs = ["--all-packages" "--no-emit-project" "--no-emit-workspace" "--no-default-groups"];
             };
 
             groupExports = builtins.foldl' (acc: g:
@@ -260,7 +260,7 @@
               inherit python extraBuildInputs;
               src = metadataSrc;
               name = "deps";
-              exportArgs = ["--all-packages" "--no-emit-project" "--no-emit-workspace"];
+              exportArgs = ["--all-packages" "--no-emit-project" "--no-emit-workspace" "--no-default-groups"];
               excludeFrom = builtins.map (ge: ge.export) groupExports;
             };
 
