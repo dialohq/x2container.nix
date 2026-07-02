@@ -209,6 +209,10 @@
             # real dependency declarations) — it never adds anything.
             dependencyLayers ? "auto",
             autoLayerThresholdMB ? 32,
+            # Layer blob compression ("gzip" or null for uncompressed tars).
+            # Compressed digests are computed at build time, so pushes skip
+            # unchanged layers statelessly and clients pull compressed blobs.
+            layerCompression ? "gzip",
             # Optional build-time self-test command (argv list), run with the
             # image's runtime environment; the image build fails if it fails.
             imageCheck ? null,
@@ -484,13 +488,13 @@
             # only needs to exclude the shared python/runtimeLibs closure.
             pythonLayer = n2c.buildLayer {
               deps = [python] ++ runtimeLibs;
-              compress = "gzip";
+              compress = layerCompression;
             };
             envLayer = env:
               n2c.buildLayer {
                 deps = [env];
                 layers = [pythonLayer];
-                compress = "gzip";
+                compress = layerCompression;
               };
             groupImageLayers = builtins.map envLayer groupEnvs;
             depsLayer = envLayer depsEnv;
@@ -517,7 +521,7 @@
                   ++ [
                     (n2c.buildLayer {
                       copyToRoot = [sourcesLayer];
-                      compress = "gzip";
+                      compress = layerCompression;
                     })
                   ]
                   ++ extraLayers;
