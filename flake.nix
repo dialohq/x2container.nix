@@ -3,7 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    nix2container.url = "github:nlewo/nix2container";
+    nix2container.url = "github:dialohq/nix2container/compressed-layers";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
@@ -482,11 +482,15 @@
             # Each env layer holds exactly its own venv: venvs are disjoint by
             # construction (contents partitioned by name), so deduplication
             # only needs to exclude the shared python/runtimeLibs closure.
-            pythonLayer = n2c.buildLayer {deps = [python] ++ runtimeLibs;};
+            pythonLayer = n2c.buildLayer {
+              deps = [python] ++ runtimeLibs;
+              compress = "gzip";
+            };
             envLayer = env:
               n2c.buildLayer {
                 deps = [env];
                 layers = [pythonLayer];
+                compress = "gzip";
               };
             groupImageLayers = builtins.map envLayer groupEnvs;
             depsLayer = envLayer depsEnv;
@@ -513,6 +517,7 @@
                   ++ [
                     (n2c.buildLayer {
                       copyToRoot = [sourcesLayer];
+                      compress = "gzip";
                     })
                   ]
                   ++ extraLayers;
