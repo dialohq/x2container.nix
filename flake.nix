@@ -71,7 +71,7 @@
                 ${
                   if restrictTo != null
                   then ''
-                    uv export --frozen --format pylock.toml --no-annotate --no-header \
+                    uv export --locked --format pylock.toml --no-annotate --no-header \
                       ${pkgs.lib.escapeShellArgs exportArgs} -o "$TMPDIR/pylock.probe.toml"
                     pylock_names "$TMPDIR/pylock.probe.toml" > "$TMPDIR/mine.txt"
                     comm -23 "$TMPDIR/mine.txt" ${restrictTo}/packages.txt > "$TMPDIR/drop.txt"
@@ -82,7 +82,7 @@
                   else ""
                 }
 
-                uv export --frozen --format pylock.toml --no-annotate --no-header \
+                uv export --locked --format pylock.toml --no-annotate --no-header \
                   ${pkgs.lib.escapeShellArgs exportArgs} "''${exclude_args[@]}" \
                   -o $out/pylock.toml
                 pylock_names $out/pylock.toml > $out/packages.txt
@@ -189,6 +189,10 @@
             # packages claimed by earlier group layers. Group membership only
             # controls layer placement — it never adds packages to the image.
             dependencyLayers ? "flat",
+            # Optional build-time self-test command (argv list), run with the
+            # image's runtime environment; the image build fails if it fails.
+            imageCheck ? null,
+            imageCheckEnv ? {},
           }: let
             inherit (pkgs.lib) fileset;
 
@@ -322,6 +326,30 @@
               )
             ];
 
+            # Build-time self-test: runs imageCheck with the image's runtime
+            # environment (PYTHONPATH overlay, PATH, libraries, sources as
+            # cwd). Catches "declared but not shipped" dependencies before
+            # anything reaches a registry.
+            imageCheckDrv =
+              if imageCheck == null
+              then null
+              else
+                pkgs.runCommand "${name}-image-check" {} ''
+                  ${pkgs.lib.concatMapStrings (e: ''
+                    export ${pkgs.lib.escapeShellArg e}
+                  '')
+                  defaultEnv}
+                  export PATH="$PATH:${pkgs.coreutils}/bin"
+                  export HOME="$TMPDIR"
+                  ${pkgs.lib.concatStrings (pkgs.lib.mapAttrsToList (k: v: ''
+                      export ${k}=${pkgs.lib.escapeShellArg v}
+                    '')
+                    imageCheckEnv)}
+                  cd ${sourcesLayer}
+                  ${pkgs.lib.escapeShellArgs imageCheck}
+                  touch $out
+                '';
+
             # Most-stable first, chained so each store path ships once.
             pythonLayer = n2c.buildLayer {deps = [python] ++ runtimeLibs;};
             groupImageLayers = builtins.foldl' (acc: env:
@@ -379,6 +407,7 @@
               buildInputs = [python] ++ extraBuildInputs;
               nativeBuildInputs = [pkgs.uv];
               propagatedBuildInputs = runtimeLibs;
+              imageCheck = imageCheckDrv;
             });
         };
       };
