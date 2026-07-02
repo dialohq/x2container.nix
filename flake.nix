@@ -15,84 +15,29 @@
   }:
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = import nixpkgs {inherit system;};
+      n2c = nix2container.packages.${system}.nix2container;
 
       lib = {
         uv2container = rec {
-          buildDepsLayer = {
+          # Export a pinned pylock.toml (+ a plain package-name list) from
+          # uv.lock. pylock pins exact artifact URLs and hashes, so installs
+          # never re-resolve against an index (a package published on two
+          # indexes with different bytes can't be picked wrongly).
+          # Content-addressed: when a uv.lock change leaves the exported set
+          # untouched (e.g. only non-heavy packages were bumped), downstream
+          # derivations are not rebuilt.
+          exportRequirements = {
             python,
             src,
+            name ? "requirements",
+            exportArgs ? [],
+            # Optional derivation (from exportRequirements) whose packages.txt
+            # is subtracted from this export.
+            excludeFrom ? null,
             extraBuildInputs ? [],
-            cache ? null,
           }:
             pkgs.stdenv.mkDerivation {
-              name = "deps-layer-venv";
-              NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-              inherit src;
-              __noChroot = true;
-              dontFixup = true;
-              nativeBuildInputs = [python pkgs.uv] ++ extraBuildInputs;
-              buildPhase = ''
-                runHook preBuild
-                ${
-                  if cache != null
-                  then ''
-                    mkdir -p $TMPDIR/.uv_cache/
-                    cp -r ${cache}/* $TMPDIR/.uv_cache/
-                    chmod -R u+w $TMPDIR/.uv_cache
-                  ''
-                  else ""
-                }
-
-                export PATH=".venv/bin:$PATH"
-                export UV_PYTHON_PREFERENCE="only-system"
-                export UV_CACHE_DIR="$TMPDIR/.uv_cache"
-                export UV_PYTHON="${python}/bin/python${python.pythonVersion}"
-                export VIRTUAL_ENV=$out
-                export UV_PROJECT_ENVIRONMENT=$out
-                mkdir -p $VIRTUAL_ENV
-                uv venv
-                uv sync --no-install-project --all-packages --locked --no-editable
-                runHook postBuild
-              '';
-            };
-
-          buildCache = {
-            python,
-            src,
-            extraBuildInputs ? [],
-            indexes ? [],
-          }:
-            pkgs.stdenv.mkDerivation {
-              name = "build-cache";
-              inherit src;
-              __noChroot = true;
-              dontFixup = true;
-              nativeBuildInputs = [python pkgs.uv] ++ extraBuildInputs;
-              buildPhase = ''
-                runHook preBuild
-                export UV_PYTHON_PREFERENCE="only-system"
-                export UV_CACHE_DIR="$PWD/.uv_cache"
-                # export UV_PYTHON="${python}/bin/python${python.pythonVersion}"
-                export PATH="$VIRTUAL_ENV/bin:$PATH"
-                mkdir -p $out
-                mkdir -p $UV_CACHE_DIR
-                uv venv
-                source .venv/bin/activate
-                uv init
-                uv add -r requirements.txt ${pkgs.lib.strings.concatMapStringsSep " " (i: "--index ${i}") indexes} --index-strategy unsafe-best-match
-                uv sync --no-install-project --all-packages --locked --no-editable --index-strategy unsafe-best-match
-                cp -r $UV_CACHE_DIR/* $out
-                runHook postBuild
-              '';
-            };
-          cacheRequirements = {
-            python,
-            src,
-            extraBuildInputs ? [],
-            group,
-          }:
-            pkgs.stdenv.mkDerivation {
-              name = "cache-requirements";
+              name = "${name}-requirements";
               inherit src;
               __noChroot = true;
               __contentAddressed = true;
@@ -100,17 +45,89 @@
               nativeBuildInputs = [python pkgs.uv] ++ extraBuildInputs;
               buildPhase = ''
                 runHook preBuild
-                export PATH=".venv/bin:$PATH"
-                export UV_PYTHON_PREFERENCE="only-system"
                 export UV_CACHE_DIR="$TMPDIR/.uv_cache"
+                export UV_PYTHON_PREFERENCE="only-system"
                 export UV_PYTHON="${python}/bin/python${python.pythonVersion}"
-                # export UV_PROJECT_ENVIRONMENT=$out
-
-                mkdir -p $UV_CACHE_DIR
                 mkdir -p $out
-                echo "path: $PATH"
-                # uv venv
-                uv export --group ${group} > $out/requirements.txt
+
+                exclude_args=()
+                ${
+                  if excludeFrom != null
+                  then ''
+                    while IFS= read -r p; do
+                      [ -n "$p" ] && exclude_args+=(--no-emit-package "$p")
+                    done < ${excludeFrom}/packages.txt
+                  ''
+                  else ""
+                }
+
+                uv export --frozen --format pylock.toml --no-annotate --no-header \
+                  ${pkgs.lib.escapeShellArgs exportArgs} "''${exclude_args[@]}" \
+                  -o $out/pylock.toml
+                grep -E '^name = ' $out/pylock.toml \
+                  | sed 's/^name = "\(.*\)"/\1/' | sort -u > $out/packages.txt
+                runHook postBuild
+              '';
+            };
+
+          # Build a venv containing exactly the packages of a pylock export.
+          # No resolution happens at install time; artifacts come from the
+          # exact URLs the lock refers to.
+          buildVenvFromRequirements = {
+            python,
+            name,
+            requirements,
+            indexes ? [],
+            extraBuildInputs ? [],
+          }:
+            pkgs.stdenv.mkDerivation {
+              inherit name;
+              NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+              SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+              dontUnpack = true;
+              __noChroot = true;
+              dontFixup = true;
+              nativeBuildInputs = [python pkgs.uv] ++ extraBuildInputs;
+              buildPhase = ''
+                runHook preBuild
+                export UV_CACHE_DIR="$TMPDIR/.uv_cache"
+                export UV_PYTHON_PREFERENCE="only-system"
+                export UV_PYTHON="${python}/bin/python${python.pythonVersion}"
+                uv venv "$out"
+                if [ -s ${requirements}/packages.txt ]; then
+                  uv pip install --python "$out/bin/python" --no-deps \
+                    -r ${requirements}/pylock.toml
+                fi
+                runHook postBuild
+              '';
+            };
+
+          # Build a venv containing a single workspace member (non-editable).
+          # Keyed only on that member's sources: a change to one member never
+          # rebuilds another (in particular, pure-Python edits don't rebuild
+          # members with native build steps).
+          buildMemberEnv = {
+            python,
+            name,
+            src,
+            memberPath,
+            extraBuildInputs ? [],
+          }:
+            pkgs.stdenv.mkDerivation {
+              inherit name;
+              NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+              SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+              inherit src;
+              __noChroot = true;
+              dontFixup = true;
+              nativeBuildInputs = [python pkgs.uv] ++ extraBuildInputs;
+              buildPhase = ''
+                runHook preBuild
+                export UV_CACHE_DIR="$TMPDIR/.uv_cache"
+                export UV_PYTHON_PREFERENCE="only-system"
+                export UV_PYTHON="${python}/bin/python${python.pythonVersion}"
+                uv venv "$out"
+                uv pip install --python "$out/bin/python" --no-deps ./${memberPath}
                 runHook postBuild
               '';
             };
@@ -122,6 +139,7 @@
             python,
             src,
             members ? [],
+            # Deprecated: member sources no longer feed the dependency layer.
             localDeps ? [],
             extraBuildInputs ? [],
             baseImage ? {},
@@ -136,59 +154,110 @@
             cacheGroupName ? null,
             cacheGroupIndexes ? [],
           }: let
-            memberMetadataCandidates =
-              builtins.concatMap
-              (member: [
-                (src + "/${member}/pyproject.toml")
-                (src + "/${member}/uv.lock")
-                (src + "/${member}/__init__.py")
-              ])
-              members;
+            inherit (pkgs.lib) fileset;
 
-            dependencyMetadataFiles = builtins.filter builtins.pathExists (
-              [
-                (src + "/uv.lock")
-                (src + "/pyproject.toml")
-              ]
-              ++ memberMetadataCandidates
+            sitePackages = env: "${env}/lib/python${python.pythonVersion}/site-packages";
+
+            # uv only needs the project metadata to interpret the lock; member
+            # sources stay out so source edits never touch dependency layers.
+            pyprojectFiles = builtins.filter builtins.pathExists (
+              [(src + "/pyproject.toml")]
+              ++ builtins.map (m: src + "/${m}/pyproject.toml") members
             );
+            metadataFiles =
+              builtins.filter builtins.pathExists [(src + "/uv.lock")]
+              ++ pyprojectFiles;
+            metadataSrc = fileset.toSource {
+              root = src;
+              fileset = fileset.unions metadataFiles;
+            };
 
-            localDependencyFiles = builtins.filter builtins.pathExists (
-              builtins.map (dep: src + "/${dep}") localDeps
-            );
-
-            cachedLayer =
+            heavyRequirements =
               if cacheGroupName != null
               then
-                buildCache {
+                exportRequirements {
                   inherit python extraBuildInputs;
-                  src = cacheRequirements {
-                    inherit python extraBuildInputs src;
-                    group = cacheGroupName;
-                  };
+                  src = metadataSrc;
+                  name = "group-${cacheGroupName}";
+                  exportArgs = ["--only-group" cacheGroupName];
+                }
+              else null;
+
+            heavyEnv =
+              if cacheGroupName != null
+              then
+                buildVenvFromRequirements {
+                  inherit python extraBuildInputs;
+                  name = "env-${cacheGroupName}";
+                  requirements = heavyRequirements;
                   indexes = cacheGroupIndexes;
                 }
               else null;
 
-            depsLayer = buildDepsLayer {
+            depsRequirements = exportRequirements {
               inherit python extraBuildInputs;
-              cache = cachedLayer;
-              src =
-                pkgs.lib.fileset.toSource
-                {
-                  root = src;
-                  fileset = pkgs.lib.fileset.unions (dependencyMetadataFiles ++ localDependencyFiles);
-                };
+              src = metadataSrc;
+              name = "deps";
+              exportArgs = ["--all-packages" "--no-emit-project" "--no-emit-workspace"];
+              excludeFrom = heavyRequirements;
             };
+
+            depsEnv = buildVenvFromRequirements {
+              inherit python extraBuildInputs;
+              name = "env-deps";
+              requirements = depsRequirements;
+              indexes = cacheGroupIndexes;
+            };
+
+            # A member's fileset excludes members nested under it, so e.g.
+            # editing a nested native member doesn't rebuild its parent and
+            # vice versa.
+            memberFileset = m: let
+              nested =
+                builtins.filter
+                (o: o != m && pkgs.lib.hasPrefix "${m}/" o)
+                members;
+            in
+              if nested == []
+              then src + "/${m}"
+              else
+                fileset.difference
+                (src + "/${m}")
+                (fileset.unions (builtins.map (o: src + "/${o}") nested));
+
+            memberEnvs =
+              builtins.map (m:
+                buildMemberEnv {
+                  inherit python extraBuildInputs;
+                  name = "member-${builtins.replaceStrings ["/"] ["-"] m}";
+                  # Workspace pyprojects are required for uv to accept
+                  # `workspace = true` sources; uv.lock is not (installs are
+                  # --no-deps), so lock changes don't rebuild members.
+                  src = fileset.toSource {
+                    root = src;
+                    fileset = fileset.unions (pyprojectFiles ++ [(memberFileset m)]);
+                  };
+                  memberPath = m;
+                })
+              members;
+
+            pythonEnvs = memberEnvs ++ [depsEnv] ++ (pkgs.lib.optional (heavyEnv != null) heavyEnv);
+
             sourcesLayer =
-              pkgs.lib.fileset.toSource
+              fileset.toSource
               {
                 root = src;
-                fileset = pkgs.lib.fileset.fileFilter filesetFilter src;
+                fileset = fileset.fileFilter filesetFilter src;
               };
+
             defaultEnv = [
-              "PYTHONPATH=${depsLayer}/lib/python${python.pythonVersion}/site-packages:${python}/lib/python${python.pythonVersion}/site-packages"
-              ("PATH=${depsLayer}/bin:${python}/bin:/bin:/usr/bin:" + (pkgs.lib.strings.concatMapStringsSep ":" (dep: "${dep}/bin") runtimeExecutableDeps))
+              ("PYTHONPATH="
+                + pkgs.lib.concatMapStringsSep ":" sitePackages pythonEnvs
+                + ":${sitePackages python}")
+              ("PATH="
+                + pkgs.lib.concatMapStringsSep ":" (env: "${env}/bin") pythonEnvs
+                + ":${python}/bin:/bin:/usr/bin:"
+                + (pkgs.lib.strings.concatMapStringsSep ":" (dep: "${dep}/bin") runtimeExecutableDeps))
               (
                 "LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath ([pkgs.stdenv.cc.cc.lib] ++ runtimeLibs)}"
                 + extraLdLibraryPath
@@ -198,8 +267,32 @@
                 + extraLibraryPath
               )
             ];
+
+            # Layers ordered most-stable first and explicitly chained so each
+            # store path ships exactly once; a rebuilt layer never re-ships
+            # content of the layers before it.
+            pythonLayer = n2c.buildLayer {deps = [python] ++ runtimeLibs;};
+            heavyLayer =
+              if heavyEnv != null
+              then
+                n2c.buildLayer {
+                  deps = [heavyEnv];
+                  layers = [pythonLayer];
+                }
+              else null;
+            depsLayer = n2c.buildLayer {
+              deps = [depsEnv];
+              layers = [pythonLayer] ++ pkgs.lib.optional (heavyLayer != null) heavyLayer;
+            };
+            memberLayers =
+              builtins.map (env:
+                n2c.buildLayer {
+                  deps = [env];
+                  layers = [pythonLayer depsLayer] ++ pkgs.lib.optional (heavyLayer != null) heavyLayer;
+                })
+              memberEnvs;
           in
-            (nix2container.packages.${system}.nix2container.buildImage ({
+            (n2c.buildImage ({
                 inherit name;
                 config =
                   config
@@ -213,10 +306,12 @@
                       );
                   };
                 layers =
-                  [
-                    (nix2container.packages.${system}.nix2container.buildLayer {deps = [depsLayer];})
-                    (nix2container.packages.${system}.nix2container.buildLayer {deps = [python] ++ runtimeLibs;})
-                    (nix2container.packages.${system}.nix2container.buildLayer {
+                  [pythonLayer]
+                  ++ pkgs.lib.optional (heavyLayer != null) heavyLayer
+                  ++ [depsLayer]
+                  ++ memberLayers
+                  ++ [
+                    (n2c.buildLayer {
                       copyToRoot = [sourcesLayer];
                     })
                   ]
@@ -224,9 +319,10 @@
               }
               // (
                 if baseImage ? imageName
-                then {fromImage = nix2container.packages.${system}.nix2container.pullImage baseImage;}
+                then {fromImage = n2c.pullImage baseImage;}
                 else {}
-              ))).overrideAttrs (old: {
+              )))
+            .overrideAttrs (old: {
               buildInputs = [python] ++ extraBuildInputs;
               nativeBuildInputs = [pkgs.uv];
               propagatedBuildInputs = runtimeLibs;
