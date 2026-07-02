@@ -38,7 +38,7 @@
               __noChroot = true;
               __contentAddressed = true;
               dontFixup = true;
-              nativeBuildInputs = [python pkgs.uv] ++ extraBuildInputs;
+              nativeBuildInputs = [python pkgs.uv pkgs.gitMinimal] ++ extraBuildInputs;
               buildPhase = ''
                 runHook preBuild
                 export UV_CACHE_DIR="$TMPDIR/.uv_cache"
@@ -98,7 +98,7 @@
               dontUnpack = true;
               __noChroot = true;
               dontFixup = true;
-              nativeBuildInputs = [python pkgs.uv pkgs.removeReferencesTo] ++ extraBuildInputs;
+              nativeBuildInputs = [python pkgs.uv pkgs.gitMinimal pkgs.removeReferencesTo] ++ extraBuildInputs;
               buildPhase = ''
                 runHook preBuild
                 export UV_CACHE_DIR="$TMPDIR/.uv_cache"
@@ -143,7 +143,7 @@
               SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
               __noChroot = true;
               dontFixup = true;
-              nativeBuildInputs = [python pkgs.uv pkgs.removeReferencesTo] ++ extraBuildInputs;
+              nativeBuildInputs = [python pkgs.uv pkgs.gitMinimal pkgs.removeReferencesTo] ++ extraBuildInputs;
               buildPhase = ''
                 runHook preBuild
                 export UV_CACHE_DIR="$TMPDIR/.uv_cache"
