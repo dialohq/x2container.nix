@@ -19,21 +19,20 @@
 
       lib = {
         uv2container = rec {
-          # Export a pinned pylock.toml (+ a plain package-name list) from
-          # uv.lock. pylock pins exact artifact URLs and hashes, so installs
-          # never re-resolve against an index (a package published on two
-          # indexes with different bytes can't be picked wrongly).
-          # Content-addressed: when a uv.lock change leaves the exported set
-          # untouched (e.g. only non-heavy packages were bumped), downstream
-          # derivations are not rebuilt.
+          # Export a pinned pylock.toml (+ package-name list) from uv.lock.
+          # Content-addressed: lock changes that leave the exported set
+          # untouched don't rebuild downstream derivations.
           exportRequirements = {
             python,
             src,
             name ? "requirements",
             exportArgs ? [],
-            # Optional derivation (from exportRequirements) whose packages.txt
-            # is subtracted from this export.
-            excludeFrom ? null,
+            # Derivations (from exportRequirements) whose packages.txt are
+            # subtracted from this export.
+            excludeFrom ? [],
+            # Optional derivation whose packages.txt limits this export:
+            # packages outside it are dropped (never added to the image).
+            restrictTo ? null,
             extraBuildInputs ? [],
           }:
             pkgs.stdenv.mkDerivation {
@@ -52,11 +51,33 @@
 
                 exclude_args=()
                 ${
-                  if excludeFrom != null
-                  then ''
+                  pkgs.lib.concatMapStrings (d: ''
                     while IFS= read -r p; do
                       [ -n "$p" ] && exclude_args+=(--no-emit-package "$p")
-                    done < ${excludeFrom}/packages.txt
+                    done < ${d}/packages.txt
+                  '')
+                  excludeFrom
+                }
+                pylock_names() {
+                  python3 -c '
+                import sys, tomllib
+                with open(sys.argv[1], "rb") as f:
+                    data = tomllib.load(f)
+                for name in sorted({p["name"] for p in data.get("packages", [])}):
+                    print(name)
+                ' "$1"
+                }
+
+                ${
+                  if restrictTo != null
+                  then ''
+                    uv export --frozen --format pylock.toml --no-annotate --no-header \
+                      ${pkgs.lib.escapeShellArgs exportArgs} -o "$TMPDIR/pylock.probe.toml"
+                    pylock_names "$TMPDIR/pylock.probe.toml" > "$TMPDIR/mine.txt"
+                    comm -23 "$TMPDIR/mine.txt" ${restrictTo}/packages.txt > "$TMPDIR/drop.txt"
+                    while IFS= read -r p; do
+                      [ -n "$p" ] && exclude_args+=(--no-emit-package "$p")
+                    done < "$TMPDIR/drop.txt"
                   ''
                   else ""
                 }
@@ -64,20 +85,28 @@
                 uv export --frozen --format pylock.toml --no-annotate --no-header \
                   ${pkgs.lib.escapeShellArgs exportArgs} "''${exclude_args[@]}" \
                   -o $out/pylock.toml
-                grep -E '^name = ' $out/pylock.toml \
-                  | sed 's/^name = "\(.*\)"/\1/' | sort -u > $out/packages.txt
+                pylock_names $out/pylock.toml > $out/packages.txt
                 runHook postBuild
               '';
             };
 
-          # Build a venv containing exactly the packages of a pylock export.
-          # No resolution happens at install time; artifacts come from the
-          # exact URLs the lock refers to.
+          # Extensions built from sdists embed build-only toolchain store
+          # paths (debug info / comments); null them so venv layers don't
+          # drag the compiler closure into the image.
+          scrubToolchainReferences = ''
+            find "$out" -type f -name '*.so*' -print0 \
+              | xargs -0 --no-run-if-empty remove-references-to \
+                -t ${pkgs.stdenv.cc} \
+                -t ${pkgs.stdenv.cc.cc} \
+                -t ${pkgs.lib.getDev pkgs.stdenv.cc.libc}
+          '';
+
+          # Venv with exactly the packages of a pylock export; no resolution
+          # at install time.
           buildVenvFromRequirements = {
             python,
             name,
             requirements,
-            indexes ? [],
             extraBuildInputs ? [],
           }:
             pkgs.stdenv.mkDerivation {
@@ -87,7 +116,7 @@
               dontUnpack = true;
               __noChroot = true;
               dontFixup = true;
-              nativeBuildInputs = [python pkgs.uv] ++ extraBuildInputs;
+              nativeBuildInputs = [python pkgs.uv pkgs.removeReferencesTo] ++ extraBuildInputs;
               buildPhase = ''
                 runHook preBuild
                 export UV_CACHE_DIR="$TMPDIR/.uv_cache"
@@ -98,14 +127,13 @@
                   uv pip install --python "$out/bin/python" --no-deps \
                     -r ${requirements}/pylock.toml
                 fi
+                ${scrubToolchainReferences}
                 runHook postBuild
               '';
             };
 
-          # Build a venv containing a single workspace member (non-editable).
-          # Keyed only on that member's sources: a change to one member never
-          # rebuilds another (in particular, pure-Python edits don't rebuild
-          # members with native build steps).
+          # Venv with a single workspace member, keyed only on that member's
+          # sources.
           buildMemberEnv = {
             python,
             name,
@@ -120,7 +148,7 @@
               inherit src;
               __noChroot = true;
               dontFixup = true;
-              nativeBuildInputs = [python pkgs.uv] ++ extraBuildInputs;
+              nativeBuildInputs = [python pkgs.uv pkgs.removeReferencesTo] ++ extraBuildInputs;
               buildPhase = ''
                 runHook preBuild
                 export UV_CACHE_DIR="$TMPDIR/.uv_cache"
@@ -128,6 +156,7 @@
                 export UV_PYTHON="${python}/bin/python${python.pythonVersion}"
                 uv venv "$out"
                 uv pip install --python "$out/bin/python" --no-deps ./${memberPath}
+                ${scrubToolchainReferences}
                 runHook postBuild
               '';
             };
@@ -139,8 +168,6 @@
             python,
             src,
             members ? [],
-            # Deprecated: member sources no longer feed the dependency layer.
-            localDeps ? [],
             extraBuildInputs ? [],
             baseImage ? {},
             runtimeLibs ? [],
@@ -151,15 +178,24 @@
             config ? {},
             extraLayers ? [],
             runtimeExecutableDeps ? [],
-            cacheGroupName ? null,
-            cacheGroupIndexes ? [],
+            # How third-party dependencies are split into image layers:
+            #   "flat"      — one layer with the entire dependency set;
+            #   "autosplit" — one layer per [dependency-groups] entry of the
+            #                 root pyproject.toml (alphabetical) + a layer
+            #                 with the remainder;
+            #   [ "g1" .. ] — one layer per listed group, in order, + a layer
+            #                 with the remainder.
+            # A group layer holds (group closure ∩ shipped packages) minus
+            # packages claimed by earlier group layers. Group membership only
+            # controls layer placement — it never adds packages to the image.
+            dependencyLayers ? "flat",
           }: let
             inherit (pkgs.lib) fileset;
 
             sitePackages = env: "${env}/lib/python${python.pythonVersion}/site-packages";
 
-            # uv only needs the project metadata to interpret the lock; member
-            # sources stay out so source edits never touch dependency layers.
+            # Only metadata: member sources must not invalidate dependency
+            # layers.
             pyprojectFiles = builtins.filter builtins.pathExists (
               [(src + "/pyproject.toml")]
               ++ builtins.map (m: src + "/${m}/pyproject.toml") members
@@ -172,46 +208,65 @@
               fileset = fileset.unions metadataFiles;
             };
 
-            heavyRequirements =
-              if cacheGroupName != null
+            effectiveGroups =
+              if dependencyLayers == "flat"
+              then []
+              else if dependencyLayers == "autosplit"
               then
-                exportRequirements {
-                  inherit python extraBuildInputs;
-                  src = metadataSrc;
-                  name = "group-${cacheGroupName}";
-                  exportArgs = ["--only-group" cacheGroupName];
-                }
-              else null;
+                builtins.attrNames
+                ((builtins.fromTOML (builtins.readFile (src + "/pyproject.toml"))).dependency-groups or {})
+              else if builtins.isList dependencyLayers
+              then pkgs.lib.unique dependencyLayers
+              else throw "dependencyLayers must be \"flat\", \"autosplit\", or a list of dependency-group names";
 
-            heavyEnv =
-              if cacheGroupName != null
-              then
+            allShippedRequirements = exportRequirements {
+              inherit python extraBuildInputs;
+              src = metadataSrc;
+              name = "all-shipped";
+              exportArgs = ["--all-packages" "--no-emit-project" "--no-emit-workspace"];
+            };
+
+            groupExports = builtins.foldl' (acc: g:
+              acc
+              ++ [
+                {
+                  group = g;
+                  export = exportRequirements {
+                    inherit python extraBuildInputs;
+                    src = metadataSrc;
+                    name = "group-${g}";
+                    exportArgs = ["--only-group" g];
+                    restrictTo = allShippedRequirements;
+                    excludeFrom = builtins.map (ge: ge.export) acc;
+                  };
+                }
+              ]) []
+            effectiveGroups;
+
+            groupEnvs =
+              builtins.map (ge:
                 buildVenvFromRequirements {
                   inherit python extraBuildInputs;
-                  name = "env-${cacheGroupName}";
-                  requirements = heavyRequirements;
-                  indexes = cacheGroupIndexes;
-                }
-              else null;
+                  name = "env-${ge.group}";
+                  requirements = ge.export;
+                })
+              groupExports;
 
             depsRequirements = exportRequirements {
               inherit python extraBuildInputs;
               src = metadataSrc;
               name = "deps";
               exportArgs = ["--all-packages" "--no-emit-project" "--no-emit-workspace"];
-              excludeFrom = heavyRequirements;
+              excludeFrom = builtins.map (ge: ge.export) groupExports;
             };
 
             depsEnv = buildVenvFromRequirements {
               inherit python extraBuildInputs;
               name = "env-deps";
               requirements = depsRequirements;
-              indexes = cacheGroupIndexes;
             };
 
-            # A member's fileset excludes members nested under it, so e.g.
-            # editing a nested native member doesn't rebuild its parent and
-            # vice versa.
+            # Excludes members nested under m so they don't invalidate it.
             memberFileset = m: let
               nested =
                 builtins.filter
@@ -230,9 +285,8 @@
                 buildMemberEnv {
                   inherit python extraBuildInputs;
                   name = "member-${builtins.replaceStrings ["/"] ["-"] m}";
-                  # Workspace pyprojects are required for uv to accept
-                  # `workspace = true` sources; uv.lock is not (installs are
-                  # --no-deps), so lock changes don't rebuild members.
+                  # Pyprojects needed for `workspace = true` sources; uv.lock
+                  # deliberately excluded (installs are --no-deps).
                   src = fileset.toSource {
                     root = src;
                     fileset = fileset.unions (pyprojectFiles ++ [(memberFileset m)]);
@@ -241,7 +295,7 @@
                 })
               members;
 
-            pythonEnvs = memberEnvs ++ [depsEnv] ++ (pkgs.lib.optional (heavyEnv != null) heavyEnv);
+            pythonEnvs = memberEnvs ++ [depsEnv] ++ groupEnvs;
 
             sourcesLayer =
               fileset.toSource
@@ -268,27 +322,26 @@
               )
             ];
 
-            # Layers ordered most-stable first and explicitly chained so each
-            # store path ships exactly once; a rebuilt layer never re-ships
-            # content of the layers before it.
+            # Most-stable first, chained so each store path ships once.
             pythonLayer = n2c.buildLayer {deps = [python] ++ runtimeLibs;};
-            heavyLayer =
-              if heavyEnv != null
-              then
-                n2c.buildLayer {
-                  deps = [heavyEnv];
-                  layers = [pythonLayer];
-                }
-              else null;
+            groupImageLayers = builtins.foldl' (acc: env:
+              acc
+              ++ [
+                (n2c.buildLayer {
+                  deps = [env];
+                  layers = [pythonLayer] ++ acc;
+                })
+              ]) []
+            groupEnvs;
             depsLayer = n2c.buildLayer {
               deps = [depsEnv];
-              layers = [pythonLayer] ++ pkgs.lib.optional (heavyLayer != null) heavyLayer;
+              layers = [pythonLayer] ++ groupImageLayers;
             };
             memberLayers =
               builtins.map (env:
                 n2c.buildLayer {
                   deps = [env];
-                  layers = [pythonLayer depsLayer] ++ pkgs.lib.optional (heavyLayer != null) heavyLayer;
+                  layers = [pythonLayer depsLayer] ++ groupImageLayers;
                 })
               memberEnvs;
           in
@@ -307,7 +360,7 @@
                   };
                 layers =
                   [pythonLayer]
-                  ++ pkgs.lib.optional (heavyLayer != null) heavyLayer
+                  ++ groupImageLayers
                   ++ [depsLayer]
                   ++ memberLayers
                   ++ [
@@ -340,6 +393,7 @@
             name = "example-flask-app";
             inherit python;
             src = ./examples/flask-app;
+            dependencyLayers = "autosplit";
             config = {
               Cmd = ["python" "-m" "flask" "run" "--host=0.0.0.0"];
               WorkingDir = "/src";
