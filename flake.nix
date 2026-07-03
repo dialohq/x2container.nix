@@ -184,12 +184,10 @@
             baseImage ? {},
             runtimeLibs ? [],
             libs ? [],
-            # Nix-built python packages shipped alongside the uv-managed envs
-            # (e.g. compiled extension modules built with rustPlatform instead
-            # of wheels): each derivation must lay out
-            # $out/lib/python<ver>/site-packages/...; that directory joins
-            # PYTHONPATH and the derivation ships as its own layer.
-            pythonLibs ? [],
+            # Appended to the composed PYTHONPATH (":"-prefixed, like
+            # extraLdLibraryPath). Referenced store paths ship via the config
+            # closure — e.g. nix-built extension modules, no wheel needed.
+            extraPythonPath ? "",
             extraLdLibraryPath ? "",
             extraLibraryPath ? "",
             filesetFilter ? defaultFilesetFilter,
@@ -434,7 +432,7 @@
                 })
               members;
 
-            pythonEnvs = memberEnvs ++ [depsEnv] ++ groupEnvs ++ pythonLibs;
+            pythonEnvs = memberEnvs ++ [depsEnv] ++ groupEnvs;
 
             sourcesLayer =
               fileset.toSource
@@ -446,7 +444,8 @@
             defaultEnv = [
               ("PYTHONPATH="
                 + pkgs.lib.concatMapStringsSep ":" sitePackages pythonEnvs
-                + ":${sitePackages python}")
+                + ":${sitePackages python}"
+                + extraPythonPath)
               ("PATH="
                 + pkgs.lib.concatMapStringsSep ":" (env: "${env}/bin") pythonEnvs
                 + ":${python}/bin:/bin:/usr/bin:"
@@ -501,7 +500,6 @@
             groupImageLayers = builtins.map envLayer groupEnvs;
             depsLayer = envLayer depsEnv;
             memberLayers = builtins.map envLayer memberEnvs;
-            pythonLibLayers = builtins.map envLayer pythonLibs;
           in
             (n2c.buildImage ({
                 inherit name;
@@ -521,7 +519,6 @@
                   ++ groupImageLayers
                   ++ [depsLayer]
                   ++ memberLayers
-                  ++ pythonLibLayers
                   ++ [
                     (n2c.buildLayer {
                       copyToRoot = [sourcesLayer];
