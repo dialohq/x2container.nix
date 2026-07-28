@@ -58,7 +58,7 @@
                 uv export --locked --format pylock.toml --no-annotate --no-header \
                   ${pkgs.lib.escapeShellArgs exportArgs} "''${exclude_args[@]}" \
                   -o $out/pylock.toml
-                python3 -c '
+                ${pkgs.python3}/bin/python3 -c '
                 import sys, tomllib
                 with open(sys.argv[1], "rb") as f:
                     data = tomllib.load(f)
@@ -316,7 +316,7 @@
                   runHook preBuild
                   mkdir -p $out
                   cat ${pkgs.lib.escapeShellArgs (builtins.map (d: "${d}/packages.txt") excludeFrom)} /dev/null > claimed.txt
-                  python3 - uv.lock ${allShippedRequirements}/pylock.toml claimed.txt \
+                  ${pkgs.python3}/bin/python3 - uv.lock ${allShippedRequirements}/pylock.toml claimed.txt \
                     ${pkgs.lib.escapeShellArgs seeds} <<'PYEOF'
                   import os, re, sys, tomllib
 
